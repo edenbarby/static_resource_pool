@@ -128,11 +128,38 @@ public:
         return node;
     }
 
+private:
+    bool NodeBelongs(Node const* node) const
+    {
+        return (storage_.begin() <= node) && (node < storage_.end());
+    }
+
+    bool NodeIsTaken(Node const* node) const
+    {
+        for (auto p = freePool_; p != nullptr; p = p->next_)
+        {
+            if (p == node)
+            {
+                return false;
+            }
+        }
+
+        for (auto p = usedPool_; p != nullptr; p = p->next_)
+        {
+            if (p == node)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+public:
     void ReturnFree(Node* node)
     {
-        assert(node != nullptr);
-        assert((storage_.begin() <= node) && (node < storage_.end()));
-        assert(node != freePool_);
+        assert(NodeBelongs(node));
+        assert(NodeIsTaken(node));
 
         node->next_ = freePool_;
         freePool_ = node;
@@ -140,9 +167,8 @@ public:
 
     void ReturnUsed(Node* node)
     {
-        assert(node != nullptr);
-        assert((storage_.begin() <= node) && (node < storage_.end()));
-        assert(node != usedPool_);
+        assert(NodeBelongs(node));
+        assert(NodeIsTaken(node));
 
         node->next_ = usedPool_;
         usedPool_ = node;
@@ -151,73 +177,64 @@ public:
     template <typename FuncType>
     bool ProcessFree(FuncType func)
     {
-        auto node = TakeFree();
-        bool const poolNotEmpty = node != nullptr;
-        if (poolNotEmpty)
+        bool const notEmpty = freePool_ != nullptr;
+        if (notEmpty)
         {
+            auto node = freePool_;
+            freePool_ = node->next_;
+
             func(node->item_);
-            ReturnUsed(node);
+
+            node->next_ = usedPool_;
+            usedPool_ = node;
         }
-        return poolNotEmpty;
+        return notEmpty;
     }
 
     template <typename FuncType>
     bool ProcessUsed(FuncType func)
     {
-        auto node = TakeUsed();
-        bool const poolNotEmpty = node != nullptr;
-        if (poolNotEmpty)
+        bool const notEmpty = usedPool_ != nullptr;
+        if (notEmpty)
         {
+            auto node = usedPool_;
+            usedPool_ = node->next_;
+
             func(node->item_);
-            ReturnFree(node);
+
+            node->next_ = freePool_;
+            freePool_ = node;
         }
-        return poolNotEmpty;
+        return notEmpty;
     }
 
-    // private:
+    // bool CheckInvariants()
+    // {
+    //     // No node appears more than once across freePool_ and usedPool_.
+    //     std::array<bool, capacity_> found;
+    //     std::fill(found.begin(), found.end(), false);
 
-    // Return true if the following invariants hold:
-    //   - No node appears more than once across freePool_ and usedPool_.
-    bool CheckInvariants()
-    {
+    //     for (auto p = freePool_; p != nullptr; p = p->next_)
+    //     {
 
-        //????- All nodes in freePool_ and usedPool_ are from storage_.
+    //         auto idx = std::distance(storage_.begin(), p);
+    //         if (found.at(idx))
+    //         {
+    //             return false;
+    //         }
+    //         found.at(idx) = true;
+    //     }
 
-        std::array<bool, capacity_> found;
-        std::fill(found.begin(), found.end(), false);
+    //     for (auto p = usedPool_; p != nullptr; p = p->next_)
+    //     {
+    //         auto idx = std::distance(storage_.begin(), p);
+    //         if (found.at(idx))
+    //         {
+    //             return false;
+    //         }
+    //         found.at(idx) = true;
+    //     }
 
-        for (auto p = freePool_; p != nullptr; p = p->next_)
-        {
-            // bool const nodeBelongsToStorage = (storage_.begin() <= p) && (p < storage_.end());
-            // if (!nodeBelongsToStorage)
-            // {
-            //     return false;
-            // }
-
-            auto idx = std::distance(storage_.begin(), p);
-            if (found.at(idx))
-            {
-                return false;
-            }
-            found.at(idx) = true;
-        }
-
-        for (auto p = usedPool_; p != nullptr; p = p->next_)
-        {
-            // bool const nodeBelongsToStorage = (storage_.begin() <= p) && (p < storage_.end());
-            // if (!nodeBelongsToStorage)
-            // {
-            //     return false;
-            // }
-
-            auto idx = std::distance(storage_.begin(), p);
-            if (found.at(idx))
-            {
-                return false;
-            }
-            found.at(idx) = true;
-        }
-
-        return true;
-    }
+    //     return true;
+    // }
 };

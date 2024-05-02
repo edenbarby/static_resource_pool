@@ -46,7 +46,7 @@ TEST(StaticResourcePoolTest, SingleItemTake)
     ASSERT_EQ(p.FreePoolRemaining(), 1);
     ASSERT_EQ(p.UsedPoolRemaining(), 0);
 
-    ASSERT_TRUE(p.CheckInvariants());
+    // ASSERT_TRUE(p.CheckInvariants());
 }
 
 TEST(StaticResourcePoolTest, SingleItemProcess)
@@ -75,7 +75,7 @@ TEST(StaticResourcePoolTest, SingleItemProcess)
     ASSERT_EQ(p.FreePoolRemaining(), 1);
     ASSERT_EQ(p.UsedPoolRemaining(), 0);
 
-    ASSERT_TRUE(p.CheckInvariants());
+    // ASSERT_TRUE(p.CheckInvariants());
 }
 
 TEST(StaticResourcePoolTest, NoCopyOrMove)
@@ -149,7 +149,7 @@ TEST(StaticResourcePoolTest, NoCopyOrMove)
     ASSERT_EQ(p.FreePoolRemaining(), 1);
     ASSERT_EQ(p.UsedPoolRemaining(), 0);
 
-    ASSERT_TRUE(p.CheckInvariants());
+    // ASSERT_TRUE(p.CheckInvariants());
 }
 
 TEST(StaticResourcePoolTest, ALotOfOperations)
@@ -207,7 +207,7 @@ TEST(StaticResourcePoolTest, ALotOfOperations)
         }
         }
 
-        ASSERT_TRUE(p.CheckInvariants());
+        // ASSERT_TRUE(p.CheckInvariants());
     }
 
     ASSERT_EQ(p.FreePoolRemaining() + p.UsedPoolRemaining() + takenNodes.size(), aLotOfThings);
@@ -227,46 +227,18 @@ TEST(StaticResourcePoolTest, ALotOfOperations)
     }
 
     ASSERT_EQ(p.FreePoolRemaining(), aLotOfThings);
-    ASSERT_TRUE(p.CheckInvariants());
-}
-
-TEST(StaticResourcePoolTest, ReturnedMoreThanOnce)
-{
-
-    {
-        StaticResourcePool<int, 1> p;
-        auto n = p.TakeFree();
-        p.ReturnFree(n);
-        p.ReturnUsed(n);
-        ASSERT_FALSE(p.CheckInvariants());
-    }
-    {
-        StaticResourcePool<int, 1> p;
-        auto n = p.TakeFree();
-        p.ReturnUsed(n);
-        p.ReturnFree(n);
-        ASSERT_FALSE(p.CheckInvariants());
-    }
-    {
-        StaticResourcePool<int, 2> p;
-        auto n0 = p.TakeFree();
-        auto n1 = p.TakeFree();
-        p.ReturnUsed(n0);
-        p.ReturnUsed(n1);
-        p.ReturnUsed(n0);
-        ASSERT_FALSE(p.CheckInvariants());
-    }
+    // ASSERT_TRUE(p.CheckInvariants());
 }
 
 TEST(StaticResourcePoolDeathTest, ReturnNullptr)
 {
     {
         StaticResourcePool<int, 1> p;
-        EXPECT_DEATH(p.ReturnFree(nullptr), R"--(Assertion `node != nullptr' failed.)--");
+        EXPECT_DEATH(p.ReturnFree(nullptr), R"--(Assertion `NodeBelongs\(node\)' failed.)--");
     }
     {
         StaticResourcePool<int, 1> p;
-        EXPECT_DEATH(p.ReturnUsed(nullptr), R"--(Assertion `node != nullptr' failed.)--");
+        EXPECT_DEATH(p.ReturnUsed(nullptr), R"--(Assertion `NodeBelongs\(node\)' failed.)--");
     }
 }
 
@@ -276,13 +248,13 @@ TEST(StaticResourcePoolDeathTest, DuplicateReturn)
         StaticResourcePool<int, 1> p;
         auto n = p.TakeFree();
         p.ReturnFree(n);
-        EXPECT_DEATH(p.ReturnFree(n), R"--(Assertion `node != freePool_' failed.)--");
+        EXPECT_DEATH(p.ReturnFree(n), R"--(Assertion `NodeIsTaken\(node\)' failed.)--");
     }
     {
         StaticResourcePool<int, 1> p;
         auto n = p.TakeFree();
         p.ReturnUsed(n);
-        EXPECT_DEATH(p.ReturnUsed(n), R"--(Assertion `node != usedPool_' failed.)--");
+        EXPECT_DEATH(p.ReturnUsed(n), R"--(Assertion `NodeIsTaken\(node\)' failed.)--");
     }
 }
 
@@ -291,14 +263,33 @@ TEST(StaticResourcePoolDeathTest, ReturnToWrongPool)
     StaticResourcePool<int, 1> p0;
     StaticResourcePool<int, 1> p1;
     auto n0 = p0.TakeFree();
-    EXPECT_DEATH(
-        p1.ReturnFree(n0),
-        R"--(Assertion `\(storage_.begin\(\) <= node\) && \(node < storage_.end\(\)\)' failed.)--"
-    );
-    EXPECT_DEATH(
-        p1.ReturnUsed(n0),
-        R"--(Assertion `\(storage_.begin\(\) <= node\) && \(node < storage_.end\(\)\)' failed.)--"
-    );
+    EXPECT_DEATH(p1.ReturnFree(n0), R"--(Assertion `NodeBelongs\(node\)' failed.)--");
+    EXPECT_DEATH(p1.ReturnUsed(n0), R"--(Assertion `NodeBelongs\(node\)' failed.)--");
+}
+
+TEST(StaticResourcePoolDeathTest, ReturnedMoreThanOnce)
+{
+
+    {
+        StaticResourcePool<int, 1> p;
+        auto n = p.TakeFree();
+        p.ReturnFree(n);
+        EXPECT_DEATH(p.ReturnUsed(n), R"--(Assertion `NodeIsTaken\(node\)' failed.)--");
+    }
+    {
+        StaticResourcePool<int, 1> p;
+        auto n = p.TakeFree();
+        p.ReturnUsed(n);
+        EXPECT_DEATH(p.ReturnFree(n), R"--(Assertion `NodeIsTaken\(node\)' failed.)--");
+    }
+    {
+        StaticResourcePool<int, 2> p;
+        auto n0 = p.TakeFree();
+        auto n1 = p.TakeFree();
+        p.ReturnUsed(n0);
+        p.ReturnUsed(n1);
+        EXPECT_DEATH(p.ReturnUsed(n0), R"--(Assertion `NodeIsTaken\(node\)' failed.)--");
+    }
 }
 
 // TEST(StaticResourcePoolTests, Profiling)
