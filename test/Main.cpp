@@ -1,269 +1,347 @@
 #include "StaticResourcePool.hpp"
 #include "gtest/gtest.h"
-#include <chrono>
-#include <iostream>
+#include <list>
+#include <random>
 
-TEST(StaticResourcePoolTests, EmptyPool)
+// #include <chrono>
+// #include <iostream>
+
+TEST(StaticResourcePoolTest, SingleItemTake)
 {
-    using ItemType = int;
-    StaticResourcePool<ItemType, 0> p;
+    StaticResourcePool<int, 1> p;
 
-    ASSERT_TRUE(p.FreePoolEmpty());
+    ASSERT_FALSE(p.FreePoolEmpty());
     ASSERT_TRUE(p.UsedPoolEmpty());
 
-    ASSERT_EQ(p.FreePoolRemaining(), 0);
+    ASSERT_EQ(p.FreePoolRemaining(), 1);
     ASSERT_EQ(p.UsedPoolRemaining(), 0);
 
     {
-        auto node = p.TakeUsed();
-        ASSERT_EQ(node, nullptr);
+        auto n = p.TakeFree();
+        ASSERT_NE(n, nullptr);
+
+        n->Item() = 1;
+
+        p.ReturnUsed(n);
     }
 
-    {
-        auto node = p.TakeFree();
-        ASSERT_EQ(node, nullptr);
-    }
+    ASSERT_TRUE(p.FreePoolEmpty());
+    ASSERT_FALSE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 0);
+    ASSERT_EQ(p.UsedPoolRemaining(), 1);
 
     {
-        bool funcRan = false;
-        auto func = [&funcRan](ItemType) { funcRan = true; };
-        ASSERT_FALSE(p.ProcessFree(func));
-        ASSERT_FALSE(funcRan);
+        auto n = p.TakeUsed();
+        ASSERT_NE(n, nullptr);
+
+        ASSERT_EQ(n->Item(), 1);
+
+        p.ReturnFree(n);
     }
 
+    ASSERT_FALSE(p.FreePoolEmpty());
+    ASSERT_TRUE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 1);
+    ASSERT_EQ(p.UsedPoolRemaining(), 0);
+
+    ASSERT_TRUE(p.CheckInvariants());
+}
+
+TEST(StaticResourcePoolTest, SingleItemProcess)
+{
+    StaticResourcePool<int, 1> p;
+
+    ASSERT_FALSE(p.FreePoolEmpty());
+    ASSERT_TRUE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 1);
+    ASSERT_EQ(p.UsedPoolRemaining(), 0);
+
+    ASSERT_TRUE(p.ProcessFree([](int& i) { i = 1; }));
+
+    ASSERT_TRUE(p.FreePoolEmpty());
+    ASSERT_FALSE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 0);
+    ASSERT_EQ(p.UsedPoolRemaining(), 1);
+
+    ASSERT_TRUE(p.ProcessUsed([](int& i) { ASSERT_EQ(i, 1); }));
+
+    ASSERT_FALSE(p.FreePoolEmpty());
+    ASSERT_TRUE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 1);
+    ASSERT_EQ(p.UsedPoolRemaining(), 0);
+
+    ASSERT_TRUE(p.CheckInvariants());
+}
+
+TEST(StaticResourcePoolTest, NoCopyOrMove)
+{
+    struct NoCopyMove
     {
-        bool funcRan = false;
-        auto func = [&funcRan](ItemType) { funcRan = true; };
-        ASSERT_FALSE(p.ProcessUsed(func));
-        ASSERT_FALSE(funcRan);
+        int a_;
+
+        NoCopyMove()
+            : a_{0}
+        {
+        }
+
+        NoCopyMove(NoCopyMove const&) = delete;
+        NoCopyMove(NoCopyMove&&) = delete;
+        NoCopyMove& operator=(NoCopyMove const&) = delete;
+        NoCopyMove&& operator=(NoCopyMove&&) = delete;
+    };
+
+    StaticResourcePool<NoCopyMove, 1> p;
+
+    ASSERT_FALSE(p.FreePoolEmpty());
+    ASSERT_TRUE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 1);
+    ASSERT_EQ(p.UsedPoolRemaining(), 0);
+
+    {
+        auto n = p.TakeFree();
+        ASSERT_NE(n, nullptr);
+
+        n->Item().a_ = 1;
+
+        p.ReturnUsed(n);
+    }
+
+    ASSERT_TRUE(p.FreePoolEmpty());
+    ASSERT_FALSE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 0);
+    ASSERT_EQ(p.UsedPoolRemaining(), 1);
+
+    {
+        auto n = p.TakeUsed();
+        ASSERT_NE(n, nullptr);
+
+        ASSERT_EQ(n->Item().a_, 1);
+
+        p.ReturnFree(n);
+    }
+
+    ASSERT_FALSE(p.FreePoolEmpty());
+    ASSERT_TRUE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 1);
+    ASSERT_EQ(p.UsedPoolRemaining(), 0);
+
+    ASSERT_TRUE(p.ProcessFree([](NoCopyMove& i) { i.a_ = 1; }));
+
+    ASSERT_TRUE(p.FreePoolEmpty());
+    ASSERT_FALSE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 0);
+    ASSERT_EQ(p.UsedPoolRemaining(), 1);
+
+    ASSERT_TRUE(p.ProcessUsed([](NoCopyMove& i) { ASSERT_EQ(i.a_, 1); }));
+
+    ASSERT_FALSE(p.FreePoolEmpty());
+    ASSERT_TRUE(p.UsedPoolEmpty());
+
+    ASSERT_EQ(p.FreePoolRemaining(), 1);
+    ASSERT_EQ(p.UsedPoolRemaining(), 0);
+
+    ASSERT_TRUE(p.CheckInvariants());
+}
+
+TEST(StaticResourcePoolTest, ALotOfOperations)
+{
+    constexpr size_t aLotOfOperations = 1 << 12;
+    constexpr size_t aLotOfThings = 1 << 10;
+    using ResourcePoolType = StaticResourcePool<int, aLotOfThings>;
+    ResourcePoolType p;
+
+    std::ranlux24_base rng;
+    std::list<ResourcePoolType::Node*> takenNodes;
+    for (size_t i = 0; i < aLotOfOperations; ++i)
+    {
+        switch (rng() % 6)
+        {
+        case 0: {
+            auto n = p.TakeFree();
+            if (n != nullptr)
+            {
+                takenNodes.emplace_back(n);
+            }
+            break;
+        }
+        case 1: {
+            auto n = p.TakeUsed();
+            if (n != nullptr)
+            {
+                takenNodes.emplace_back(n);
+            }
+            break;
+        }
+        case 2: {
+            if (!takenNodes.empty())
+            {
+                p.ReturnFree(takenNodes.front());
+                takenNodes.pop_front();
+            }
+            break;
+        }
+        case 3: {
+            if (!takenNodes.empty())
+            {
+                p.ReturnUsed(takenNodes.front());
+                takenNodes.pop_front();
+            }
+            break;
+        }
+        case 4: {
+            p.ProcessFree([](int& i) { i = 1; });
+            break;
+        }
+        case 5: {
+            p.ProcessUsed([](int& i) { i = 0; });
+            break;
+        }
+        }
+
+        ASSERT_TRUE(p.CheckInvariants());
+    }
+
+    ASSERT_EQ(p.FreePoolRemaining() + p.UsedPoolRemaining() + takenNodes.size(), aLotOfThings);
+
+    while (!takenNodes.empty())
+    {
+        p.ReturnFree(takenNodes.front());
+        takenNodes.pop_front();
+    }
+
+    ASSERT_EQ(p.FreePoolRemaining() + p.UsedPoolRemaining(), aLotOfThings);
+
+    while (!p.UsedPoolEmpty())
+    {
+        auto n = p.TakeUsed();
+        p.ReturnFree(n);
+    }
+
+    ASSERT_EQ(p.FreePoolRemaining(), aLotOfThings);
+    ASSERT_TRUE(p.CheckInvariants());
+}
+
+TEST(StaticResourcePoolTest, ReturnedMoreThanOnce)
+{
+
+    {
+        StaticResourcePool<int, 1> p;
+        auto n = p.TakeFree();
+        p.ReturnFree(n);
+        p.ReturnUsed(n);
+        ASSERT_FALSE(p.CheckInvariants());
+    }
+    {
+        StaticResourcePool<int, 1> p;
+        auto n = p.TakeFree();
+        p.ReturnUsed(n);
+        p.ReturnFree(n);
+        ASSERT_FALSE(p.CheckInvariants());
+    }
+    {
+        StaticResourcePool<int, 2> p;
+        auto n0 = p.TakeFree();
+        auto n1 = p.TakeFree();
+        p.ReturnUsed(n0);
+        p.ReturnUsed(n1);
+        p.ReturnUsed(n0);
+        ASSERT_FALSE(p.CheckInvariants());
     }
 }
 
-// TEST(StaticResourcePoolTests, Single)
-// {
-//     StaticResourcePool<int, 1> p;
+TEST(StaticResourcePoolDeathTest, ReturnNullptr)
+{
+    {
+        StaticResourcePool<int, 1> p;
+        EXPECT_DEATH(p.ReturnFree(nullptr), R"--(Assertion `node != nullptr' failed.)--");
+    }
+    {
+        StaticResourcePool<int, 1> p;
+        EXPECT_DEATH(p.ReturnUsed(nullptr), R"--(Assertion `node != nullptr' failed.)--");
+    }
+}
 
-//     auto nodeOpt0 = p.GetUnused();
-//     ASSERT_TRUE(nodeOpt0.has_value());
+TEST(StaticResourcePoolDeathTest, DuplicateReturn)
+{
+    {
+        StaticResourcePool<int, 1> p;
+        auto n = p.TakeFree();
+        p.ReturnFree(n);
+        EXPECT_DEATH(p.ReturnFree(n), R"--(Assertion `node != freePool_' failed.)--");
+    }
+    {
+        StaticResourcePool<int, 1> p;
+        auto n = p.TakeFree();
+        p.ReturnUsed(n);
+        EXPECT_DEATH(p.ReturnUsed(n), R"--(Assertion `node != usedPool_' failed.)--");
+    }
+}
 
-//     auto nodeOpt1 = p.GetUnused();
-//     ASSERT_FALSE(nodeOpt1.has_value());
-
-//     auto nodeOpt2 = p.GetUsed();
-//     ASSERT_FALSE(nodeOpt2.has_value());
-
-//     auto node0 = nodeOpt0.value();
-//     node0->Item() = 1;
-//     p.ReturnUsed(node0);
-
-//     auto nodeOpt3 = p.GetUnused();
-//     ASSERT_FALSE(nodeOpt3.has_value());
-
-//     auto nodeOpt4 = p.GetUsed();
-//     ASSERT_TRUE(nodeOpt4.has_value());
-
-//     auto nodeOpt5 = p.GetUsed();
-//     ASSERT_FALSE(nodeOpt5.has_value());
-
-//     auto const& node4 = nodeOpt4.value();
-//     ASSERT_EQ(node4->Item(), 1);
-
-//     p.ReturnUnused(node4);
-// }
-
-// struct OperationCountingClass
-// {
-//     static constexpr size_t bigThingSize_ = 1 << 14;
-//     std::array<std::uint64_t, bigThingSize_> bigThing_;
-//     static size_t ctorDefaultCnt_;
-//     static size_t ctorCopyCnt_;
-//     static size_t ctorMoveCnt_;
-//     static size_t assignCopyCnt_;
-//     static size_t assignMoveCnt_;
-
-//     OperationCountingClass()
-//         : bigThing_{}
-//     {
-//         ++ctorDefaultCnt_;
-//     }
-
-//     OperationCountingClass(OperationCountingClass const& other)
-//     {
-//         ++ctorCopyCnt_;
-//         bigThing_ = other.bigThing_;
-//     }
-
-//     OperationCountingClass(OperationCountingClass&& other)
-//     {
-//         ++ctorMoveCnt_;
-//         bigThing_ = std::move(other.bigThing_);
-//     }
-
-//     OperationCountingClass& operator=(OperationCountingClass const& other)
-//     {
-//         ++assignCopyCnt_;
-//         if (this != &other)
-//         {
-//             bigThing_ = other.bigThing_;
-//         }
-//         return *this;
-//     }
-
-//     OperationCountingClass& operator=(OperationCountingClass&& other)
-//     {
-//         ++assignMoveCnt_;
-//         if (this != &other)
-//         {
-//             bigThing_ = std::move(other.bigThing_);
-//         }
-//         return *this;
-//     }
-
-//     static void Reset(void)
-//     {
-//         ctorDefaultCnt_ = 0;
-//         ctorCopyCnt_ = 0;
-//         ctorMoveCnt_ = 0;
-//         assignCopyCnt_ = 0;
-//         assignMoveCnt_ = 0;
-//     }
-
-//     static void Print(void)
-//     {
-//         std::cout << "ctorDefaultCnt_: " << ctorDefaultCnt_ << std::endl;
-//         std::cout << "ctorCopyCnt_:    " << ctorCopyCnt_ << std::endl;
-//         std::cout << "ctorMoveCnt_:    " << ctorMoveCnt_ << std::endl;
-//         std::cout << "assignCopyCnt_:   " << assignCopyCnt_ << std::endl;
-//         std::cout << "assignMoveCnt_:   " << assignMoveCnt_ << std::endl;
-//     }
-// };
-
-// size_t OperationCountingClass::ctorDefaultCnt_ = 0;
-// size_t OperationCountingClass::ctorCopyCnt_ = 0;
-// size_t OperationCountingClass::ctorMoveCnt_ = 0;
-// size_t OperationCountingClass::assignCopyCnt_ = 0;
-// size_t OperationCountingClass::assignMoveCnt_ = 0;
+TEST(StaticResourcePoolDeathTest, ReturnToWrongPool)
+{
+    StaticResourcePool<int, 1> p0;
+    StaticResourcePool<int, 1> p1;
+    auto n0 = p0.TakeFree();
+    EXPECT_DEATH(
+        p1.ReturnFree(n0),
+        R"--(Assertion `\(storage_.begin\(\) <= node\) && \(node < storage_.end\(\)\)' failed.)--"
+    );
+    EXPECT_DEATH(
+        p1.ReturnUsed(n0),
+        R"--(Assertion `\(storage_.begin\(\) <= node\) && \(node < storage_.end\(\)\)' failed.)--"
+    );
+}
 
 // TEST(StaticResourcePoolTests, Profiling)
 // {
-//     OperationCountingClass::Reset();
-//     StaticResourcePool<OperationCountingClass, 8> p;
+//     using BigType = std::array<int, 1 << 14>;
+//     StaticResourcePool<BigType, 1> p;
 
-//     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+//     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
 //     for (size_t i = 0; i < 1000; ++i)
 //     {
 //         {
-//             auto nodeOpt = p.GetUnused();
-//             if (nodeOpt.has_value())
+//             auto n = p.TakeFree();
+//             if (n != nullptr)
 //             {
-//                 auto& node = nodeOpt.value();
-//                 node.Item().bigThing_.at(0) = 1;
-//                 p.ReturnUsed(node);
+//                 n->Item().at(0) = 1;
+//                 p.ReturnFree(n);
 //             }
 //         }
 
 //         {
-//             auto nodeOpt = p.GetUsed();
-//             if (nodeOpt.has_value())
+//             auto n = p.TakeUsed();
+//             if (n != nullptr)
 //             {
-//                 auto node = nodeOpt.value();
-//                 // ASSERT_NE(node.Item().bigThing_.at(0), 0);
-//                 p.ReturnUnused(node);
+//                 n->Item().at(0) = 2;
+//                 p.ReturnFree(n);
 //             }
 //         }
 //     }
-//     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+//     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+//     auto f = [](BigType& a) { a[0] = 1; };
+//     for (size_t i = 0; i < 1000; ++i)
+//     {
+//         p.ProcessFree(f);
+//         p.ProcessUsed(f);
+//     }
+//     std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 
-//     OperationCountingClass::Print();
-//     std::cout << "Time difference = "
-//               << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count()
-//               << "[µs]" << std::endl;
-//     std::cout << "Time difference = "
-//               << std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() <<
-//               "[ns]"
+//     std::cout << "Take = " << std::chrono::duration_cast<std::chrono::nanoseconds>(t1 -
+//     t0).count()
+//               << "[ns]" << std::endl;
+//     std::cout << "Process = "
+//               << std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count() << "[ns]"
 //               << std::endl;
-
-//     // OperationCountingClass::Reset();
-
-//     // {
-//     //     auto nodeOpt = p.GetUnused();
-//     //     if (nodeOpt.has_value())
-//     //     {
-//     //         auto node = nodeOpt.value();
-//     //         node->Item().bigThing_.at(0) = 1;
-//     //         p.ReturnUsed(node);
-//     //     }
-//     // }
-
-//     // {
-//     //     auto nodeOpt = p.GetUnused();
-//     //     if (nodeOpt.has_value())
-//     //     {
-//     //         auto node = nodeOpt.value();
-//     //         node->Item().bigThing_.at(0) = 2;
-//     //         p.ReturnUsed(node);
-//     //     }
-//     // }
-
-//     // {
-//     //     auto nodeOpt = p.GetUnused();
-//     //     if (nodeOpt.has_value())
-//     //     {
-//     //         auto node = nodeOpt.value();
-//     //         node->Item().bigThing_.at(0) = 3;
-//     //         p.ReturnUsed(node);
-//     //     }
-//     // }
-
-//     // {
-//     //     auto nodeOpt = p.GetUnused();
-//     //     if (nodeOpt.has_value())
-//     //     {
-//     //         auto node = nodeOpt.value();
-//     //         node->Item().bigThing_.at(0) = 4;
-//     //         p.ReturnUsed(node);
-//     //     }
-//     // }
-
-//     // {
-//     //     auto nodeOpt = p.GetUsed();
-//     //     if (nodeOpt.has_value())
-//     //     {
-//     //         auto node = nodeOpt.value();
-//     //         ASSERT_NE(node->Item().bigThing_.at(0), 0);
-//     //         p.ReturnUnused(node);
-//     //     }
-//     // }
-
-//     // {
-//     //     auto nodeOpt = p.GetUsed();
-//     //     if (nodeOpt.has_value())
-//     //     {
-//     //         auto node = nodeOpt.value();
-//     //         ASSERT_NE(node->Item().bigThing_.at(0), 0);
-//     //         p.ReturnUnused(node);
-//     //     }
-//     // }
-
-//     // {
-//     //     auto nodeOpt = p.GetUsed();
-//     //     if (nodeOpt.has_value())
-//     //     {
-//     //         auto node = nodeOpt.value();
-//     //         ASSERT_NE(node->Item().bigThing_.at(0), 0);
-//     //         p.ReturnUnused(node);
-//     //     }
-//     // }
-
-//     // {
-//     //     auto nodeOpt = p.GetUsed();
-//     //     if (nodeOpt.has_value())
-//     //     {
-//     //         auto node = nodeOpt.value();
-//     //         ASSERT_NE(node->Item().bigThing_.at(0), 0);
-//     //         p.ReturnUnused(node);
-//     //     }
-//     // }
 
 //     ASSERT_TRUE(false);
 // }
